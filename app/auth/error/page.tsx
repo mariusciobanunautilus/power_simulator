@@ -1,0 +1,2 @@
+import Link from "next/link";
+export default function AuthError() { return <main className="auth-shell"><section className="auth-card"><p className="eyebrow">POWER SIMULATOR</p><h1>This link didn’t work</h1><p>The link may have expired, already been used, or been opened in a different browser. Request a new link and open it in the browser where you started.</p><nav className="auth-links"><Link href="/login">Sign in</Link><Link href="/forgot-password">Reset password</Link></nav></section></main>; }

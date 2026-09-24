@@ -1,0 +1,61 @@
+import { test, expect } from "@playwright/test";
+test("private pages and API reject unauthenticated requests", async ({ page, request }) => {
+  await page.goto("/dashboard");
+  await expect(page).toHaveURL(/\/login\?next=/);
+  await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+  const r = await request.get("/api/session");
+  expect(r.status()).toBe(401);
+  expect(r.headers()["cache-control"]).toContain("no-store");
+  await page.goto("/update-password");
+  await expect(page).toHaveURL(/\/login\?next=/);
+});
+test("invalid login, valid login, reload, API session and sign-out", async ({ page }) => {
+  await page.goto("/login?next=https://evil.example");
+  await page.getByLabel("Email address").fill("tester@example.com");
+  await page.getByLabel("Password", { exact:true }).fill("incorrect-password");
+  await page.getByRole("button",{name:"Sign in",exact:true}).click();
+  await expect(page.locator("form").getByRole("alert")).toContainText("Unable to sign in");
+  await page.getByLabel("Password", { exact:true }).fill("valid-password-123");
+  await page.getByRole("button",{name:"Sign in",exact:true}).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByText("tester@example.com")).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading",{name:"Power portfolio",exact:true})).toBeVisible();
+  expect((await page.request.get("/api/session")).status()).toBe(200);
+  await page.getByRole("button",{name:"Sign out",exact:true}).click();
+  await expect(page).toHaveURL(/\/login$/);
+  expect((await page.request.get("/api/session")).status()).toBe(401);
+  await page.goto("/dashboard");
+  await expect(page).toHaveURL(/\/login\?next=/);
+});
+test("signup confirmation exchanges PKCE code and opens dashboard", async ({ page }) => {
+  await page.goto("/signup");
+  await page.getByLabel("Email address").fill("tester@example.com");
+  await page.getByLabel("Password",{exact:true}).fill("valid-password-123");
+  await page.getByRole("button",{name:"Create account",exact:true}).click();
+  await expect(page.getByRole("status")).toContainText("Check your email");
+  await page.goto("/auth/callback?code=valid-code&next=//evil.example");
+  await expect(page).toHaveURL(/\/dashboard$/);
+});
+test("password recovery and update", async ({ page }) => {
+  await page.goto("/forgot-password");
+  await page.getByLabel("Email address").fill("tester@example.com");
+  await page.getByRole("button",{name:"Send reset link"}).click();
+  await expect(page.getByRole("status")).toContainText("If an account exists");
+  await page.goto("/auth/callback?code=valid-code&next=/update-password");
+  await expect(page).toHaveURL(/\/update-password$/);
+  await page.getByLabel("Password",{exact:true}).fill("a-new-password-123");
+  await page.getByLabel("Confirm password").fill("a-new-password-456");
+  await page.getByRole("button",{name:"Save password"}).click();
+  await expect(page.locator("form").getByRole("alert")).toContainText("do not match");
+  await page.getByLabel("Password",{exact:true}).fill("a-new-password-123");
+  await page.getByLabel("Confirm password").fill("a-new-password-123");
+  await page.getByRole("button",{name:"Save password"}).click();
+  await expect(page).toHaveURL(/\/dashboard\?password=updated$/);
+  await expect(page.getByRole("status")).toContainText("password has been updated");
+});
+test("invalid callback shows a recoverable error", async ({ page }) => {
+  await page.goto("/auth/callback?code=expired-code");
+  await expect(page).toHaveURL(/\/auth\/error$/);
+  await expect(page.getByRole("heading")).toContainText("link didn’t work");
+});
