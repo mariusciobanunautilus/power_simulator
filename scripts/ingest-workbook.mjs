@@ -17,6 +17,9 @@ const EXPECTED_SIZE = 1262697;
 const CELL_BATCH_SIZE = 750;
 const REF_BATCH_SIZE = 1000;
 
+const EXPECTED_SOURCE_CELL_COUNT = 93052;
+const EXPECTED_MERGED_FOLLOWER_COUNT = 60;
+
 
 function usage() {
   console.error(
@@ -733,6 +736,8 @@ async function main() {
 
     let ignoredBlankCells = 0;
 
+    let ignoredMergedFollowerCells = 0;
+
 
     /*
      * ========================================================
@@ -765,20 +770,33 @@ async function main() {
             (cell) => {
 
               /*
-               * ExcelJS may expose blank placeholder cells that
-               * exist only because they are part of a merged
-               * range or carry formatting/style metadata.
+               * ExcelJS exposes every cell inside a merged range
+               * as linked to the top-left master cell. A merged
+               * follower can therefore appear to carry the master's
+               * value even though it is not independent workbook
+               * evidence.
                *
-               * They contain no source value and therefore are
-               * not workbook evidence.
+               * Keep the master cell and skip only followers.
+               */
+
+              if (
+                cell.isMerged &&
+                cell.master &&
+                cell.master.address !== cell.address
+              ) {
+                ignoredMergedFollowerCells += 1;
+
+                return;
+              }
+
+
+              /*
+               * ExcelJS may also expose blank placeholder cells that
+               * carry formatting/style metadata. They contain no
+               * source value and therefore are not workbook evidence.
                *
                * Ignoring them prevents false CELL_PARSE_ERROR
-               * records such as:
-               *
-               *   2026!C2
-               *   2026!C4
-               *   2026!C5
-               *   2026!A41
+               * records.
                */
 
               if (
@@ -943,7 +961,11 @@ async function main() {
     );
 
     console.log(
-      `Ignored blank merge/style cells: ${ignoredBlankCells}`
+      `Ignored merged follower cells: ${ignoredMergedFollowerCells}`
+    );
+
+    console.log(
+      `Ignored blank/style cells: ${ignoredBlankCells}`
     );
 
     console.log(
@@ -957,6 +979,41 @@ async function main() {
     console.log(
       `Cell parse rejects: ${rejects.length}`
     );
+
+
+    /*
+     * Canonical workbook controls.
+     *
+     * This loader is intentionally pinned to the immutable
+     * Simulare_2026_wk39.xlsx evidence.
+     *
+     * The workbook contains 93,052 independent populated/formula
+     * source cells after excluding 60 merged-range follower cells.
+     *
+     * Fail loudly if workbook traversal changes or merged-cell
+     * handling regresses.
+     */
+
+    if (
+      rowsReceived !== EXPECTED_SOURCE_CELL_COUNT
+    ) {
+      throw new Error(
+        `Canonical source-cell count mismatch. Expected ` +
+        `${EXPECTED_SOURCE_CELL_COUNT}, got ${rowsReceived}`
+      );
+    }
+
+
+    if (
+      ignoredMergedFollowerCells !==
+      EXPECTED_MERGED_FOLLOWER_COUNT
+    ) {
+      throw new Error(
+        `Merged follower count mismatch. Expected ` +
+        `${EXPECTED_MERGED_FOLLOWER_COUNT}, got ` +
+        `${ignoredMergedFollowerCells}`
+      );
+    }
 
 
     /*
@@ -1132,7 +1189,11 @@ async function main() {
     );
 
     console.log(
-      `Ignored blank cells: ${ignoredBlankCells}`
+      `Ignored merged follower cells: ${ignoredMergedFollowerCells}`
+    );
+
+    console.log(
+      `Ignored blank/style cells: ${ignoredBlankCells}`
     );
 
     console.log(
