@@ -1,14 +1,74 @@
 # Power Simulator
 
-Next.js App Router + TypeScript starter with Supabase Auth and server-protected routes. This repository was empty before this implementation. The dashboard is an authenticated starting point; portfolio calculations and data integration are not implemented yet.
+Power Simulator is a deterministic power-portfolio model built on Next.js, Supabase/Postgres, and an immutable workbook-evidence layer.
 
-## Connection status
+The current implementation covers the workbook-to-database flow through validated calculations, reconciliation, KPI generation, and a governed reporting/publication layer. The dashboard reads only intentionally published snapshots; it is not the calculation engine.
 
-The code is ready to connect, but **no production Supabase project has been selected or modified**. No keys or account data are committed. Browser tests use a local Auth test double; they do not establish that live email delivery or hosted Supabase settings are working.
+## Current implementation
+
+The hosted Supabase project contains:
+
+- immutable workbook evidence in `raw`;
+- canonical books, products, settlement intervals, balancing, services, fees, guarantees, FX, market prices, hourly volumes, and procurement in `core`;
+- normalized and workbook-equivalent position/valuation logic, ledger, metrics, reconciliations, quality issues, and governance audit events in `calc`;
+- approved reporting snapshots and reviewer RPCs in the exposed `api` schema.
+
+Run `1` is currently technically **validated**, not approved or published. The dashboard therefore shows no portfolio publication to ordinary viewers until an approver completes the governance workflow.
+
+The database deliberately does **not** fabricate unsupported detail. Deal-level `core.trade`, authoritative hourly ID prices, and fully specified acquisition counterparties/pricing remain open source-data gaps.
+
+## Application architecture
+
+The application is Next.js App Router + TypeScript with Supabase Auth and server-protected routes.
+
+The browser/server Supabase client uses the project publishable key. Never expose a service-role or secret key in frontend environment variables.
+
+The reporting boundary is:
+
+```text
+raw evidence
+    ↓
+core operational facts
+    ↓
+calc deterministic calculations / reconciliation
+    ↓
+validated run
+    ↓
+human quality review
+    ↓
+approved run
+    ↓
+immutable api publication snapshot
+    ↓
+authenticated dashboard
+```
+
+The dashboard never reads `raw`, `core`, or `calc` as its ordinary reporting source.
+
+## Roles
+
+All non-anonymous authenticated users may read published reporting snapshots.
+
+Approval/review actions require trusted JWT `app_metadata.power_simulator_role` with one of:
+
+- `approver`
+- `admin`
+
+Users without one of those trusted app-metadata roles behave as `viewer`.
+
+Do not use user-editable `user_metadata` for authorization.
+
+Approver/admin actions available through the reporting schema:
+
+- review a quality issue as `accepted`, `resolved`, or `rejected`;
+- approve a validated run once no open high/critical issues remain;
+- publish an approved run into immutable reporting snapshots.
+
+Every quality review, approval, and publication action is recorded in `calc.run_governance_event`.
 
 ## Run locally
 
-Use Node.js 22 or later (24 recommended).
+Use Node.js 22 or later.
 
 ```sh
 npm ci
@@ -19,27 +79,48 @@ npm run dev
 
 | Variable | Value |
 | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | Project URL from Supabase → Connect |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Publishable key (`sb_publishable_…`) from that project |
-| `NEXT_PUBLIC_SITE_URL` | Canonical app origin, e.g. `http://localhost:3000` or `https://your-app.example` |
+| `NEXT_PUBLIC_SUPABASE_URL` | Hosted Power Simulator Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Publishable key (`sb_publishable_…`) |
+| `NEXT_PUBLIC_SITE_URL` | Canonical app origin, e.g. `http://localhost:3000` |
 
-Use a publishable key. Never put a secret or service-role key in these variables. Set the variables before building for deployment. `.env.local` is ignored by Git.
+`.env.local` is ignored by Git.
 
 ## Supabase Auth configuration
 
-In the selected Supabase project's dashboard:
+In Supabase:
 
-1. Enable Email authentication under Authentication → Sign In / Providers. Enable new user sign-ups if this app should accept self-registration.
-2. Enable email confirmation. Set the minimum password length to 12 to match this app.
-3. Under Authentication → URL Configuration, set Site URL to the canonical app origin.
-4. Add these Redirect URLs for development:
-   - `http://localhost:3000/auth/callback?next=/dashboard`
-   - `http://localhost:3000/auth/callback?next=/update-password`
-5. Add the same two callback URLs with your exact production origin when deploying.
-6. Keep Supabase's standard confirmation/reset email templates. This app uses PKCE with `/auth/callback` to exchange the returned code for a cookie session. Open confirmation and recovery links in the same browser where the flow started.
-7. Configure SMTP for delivery to your intended users. With Supabase's default mail service, recipient restrictions and delivery limits may prevent general-user email delivery; verify delivery before launch.
+1. Enable Email authentication.
+2. Enable email confirmation if self-registration is allowed.
+3. Set the minimum password length to at least 12.
+4. Set the Site URL to the canonical application origin.
+5. Add callback URLs for `/auth/callback?next=/dashboard` and `/auth/callback?next=/update-password`.
+6. Configure SMTP before relying on production email delivery.
+7. Assign approver/admin roles only through trusted app-metadata administration.
 
-No database migration is necessary for Auth. No existing tables, policies, users, or project settings have been changed. App access currently means any non-anonymous authenticated user in the selected Supabase project. If this must be an invitation-only or role-restricted workspace, configure that access model before connecting sensitive data.
+The security advisor currently also recommends enabling leaked-password protection in Supabase Auth.
+
+## Reporting and publication security
+
+The `api` schema is the only portfolio reporting schema exposed through PostgREST.
+
+Published tables have RLS enabled and grant authenticated users read-only access:
+
+- `api.published_run`
+- `api.published_monthly`
+- `api.published_issue_summary`
+
+Reviewer-only views are filtered by trusted app metadata:
+
+- `api.review_run`
+- `api.review_quality_issue`
+
+Mutating governance RPCs are restricted internally to approver/admin roles:
+
+- `api.review_quality_issue(...)`
+- `api.approve_run(...)`
+- `api.publish_run(...)`
+
+The publication RPC copies only approved metric snapshots and issue summaries into `api`; it does not expose raw workbook cells or operational trading facts.
 
 ## Routes
 
@@ -47,28 +128,43 @@ No database migration is necessary for Auth. No existing tables, policies, users
 | --- | --- | --- |
 | `/` | Public | Landing page |
 | `/login` | Public | Email/password login |
-| `/signup` | Public | Registration and email confirmation |
-| `/forgot-password` | Public | Request a recovery email |
-| `/auth/callback` | Public | PKCE code exchange; rejects invalid or expired codes |
-| `/auth/error` | Public | Recoverable confirmation error |
-| `/dashboard` and children | Authenticated | Protected workspace |
-| `/update-password` | Authenticated | Password update after recovery or sign-in |
-| `/api/session` | Authenticated | Current user's ID/email; otherwise HTTP 401 |
+| `/signup` | Public | Registration and confirmation |
+| `/forgot-password` | Public | Password recovery |
+| `/auth/callback` | Public | PKCE code exchange |
+| `/auth/error` | Public | Recoverable auth error |
+| `/dashboard` | Authenticated | Published reporting; reviewer controls for approver/admin |
+| `/update-password` | Authenticated | Password update |
+| `/api/session` | Authenticated | Current session summary |
 
-Other non-static paths require authentication by default. Add intentional public paths in `lib/auth/navigation.ts`. Next.js static assets bypass Proxy.
+## Database workflow
 
-## How protection works
+The canonical project procedure is `Power_Simulator_Working_Procedure.md`.
 
-- `proxy.ts` refreshes cookie sessions and checks `auth.getUser()` with the Auth server. A cookie's contents alone never authorise a request.
-- Protected pages and the API also check the user at the server boundary. New Server Actions and APIs must call `requireUser()` / `getVerifiedUser()` themselves; a layout is not sufficient access control.
-- Anonymous Supabase identities cannot enter the workspace.
-- Unauthenticated page requests redirect to login; API requests receive JSON with HTTP 401.
-- Auth redirects only allow dashboard destinations or `/update-password` on the same app.
-- Responses passing through Proxy use `Cache-Control: private, no-store`; refreshed or cleared cookies survive redirects.
-- Supabase clients are created per server request. Sign-out is a Server Action (POST), using Next.js origin validation, and clears this browser's session.
-- When portfolio tables are added, enable RLS and explicit ownership/membership policies. Route guards do not protect direct database API access.
+Schema changes are versioned under:
+
+```text
+supabase/migrations/
+```
+
+Workbook transformations and deterministic validation scripts are under:
+
+```text
+scripts/
+```
+
+Important current scripts include:
+
+- `transform-market-price-pzu-*.sql`
+- `transform-hourly-volume-2026.sql`
+- `transform-procurement-2026.sql`
+- `transform-workbook-ledger-2026.sql`
+- `validate-market-price-pzu-2026.sql`
+- `seed-metrics-quality-2026.sql`
+- `reconcile-workbook-normalized-2026.sql`
 
 ## Verification
+
+Before merging or deploying application changes:
 
 ```sh
 npm run lint
@@ -77,7 +173,7 @@ npm test
 npm run build
 ```
 
-Browser tests use a dedicated local HTTP test double, not your Supabase project. Build with the matching test environment first:
+The Playwright auth tests use a local HTTP test double, not the hosted Supabase project:
 
 ```sh
 npx playwright install chromium
@@ -87,15 +183,10 @@ NEXT_PUBLIC_SITE_URL=http://localhost:3100 npm run build
 npm run test:e2e
 ```
 
-Rebuild with real environment settings before deploying. Never deploy the test build.
+A local test pass does not replace hosted-project checks for email delivery, RLS, app metadata, approval, and publication.
 
-Coverage includes signed-out route denial, rejected/anonymous sessions, redirect safety, cookie preservation, invalid/valid login, reload persistence, authenticated API access, sign-out, signup confirmation, recovery/password update, and invalid callbacks.
+## Governance principle
 
-After selecting the hosted project, verify actual sign-up → email → callback → dashboard, login, password recovery, and sign-out with a test account. A successful local test run does not verify provider configuration or email delivery.
+Validation is technical. Approval is human. Publication is explicit.
 
-## References
-
-- [Supabase SSR setup](https://supabase.com/docs/guides/auth/server-side/creating-a-client)
-- [Supabase SSR sessions and PKCE](https://supabase.com/docs/guides/auth/server-side/advanced-guide)
-- [Redirect URL configuration](https://supabase.com/docs/guides/auth/redirect-urls)
-- [Supabase email delivery](https://supabase.com/docs/guides/auth/auth-smtp)
+A validated run must not become visible as the official dashboard result until material quality issues have been reviewed and an authorized approver publishes the snapshot.
