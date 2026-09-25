@@ -4,6 +4,7 @@ const mockEnv = {
   NEXT_PUBLIC_SUPABASE_URL: "http://127.0.0.1:54329",
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "test-publishable-key",
   NEXT_PUBLIC_SITE_URL: "http://localhost:3100",
+  NEXT_DIST_DIR: ".next-e2e",
 };
 
 export default defineConfig({
