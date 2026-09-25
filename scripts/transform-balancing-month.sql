@@ -1,36 +1,67 @@
--- Power Simulator
--- Transform workbook balancing assumptions into core.balancing_month
---
--- Source:
---   raw.source_cell
---   workbook sheet: Asumptions
---   rows: 4-15
---
--- Mapping:
---   O = month label
---   P = deficit MWh
---   Q = deficit RON/MWh
---   R = excess MWh
---   S = excess RON/MWh
---   U = redistribution income RON
---
--- Column T is intentionally NOT loaded because it is calculated
--- from the underlying inputs and belongs in the calculation layer.
---
--- Run:
---   core.model_run.run_id = 1
+/*
+ * Power Simulator
+ * Transform workbook balancing assumptions into core.balancing_month
+ *
+ * Source:
+ *   raw.source_cell
+ *   workbook sheet: Asumptions
+ *   rows: 4-15
+ *
+ * Mapping:
+ *   O = month label
+ *   P = deficit MWh
+ *   Q = deficit RON/MWh
+ *   R = excess MWh
+ *   S = excess RON/MWh
+ *   U = redistribution income RON
+ *
+ * Column T is intentionally NOT loaded because it is calculated
+ * from the underlying inputs and belongs in the calculation layer.
+ *
+ * Record-status rule:
+ *   The workbook does not contain an authoritative actual/forecast
+ *   indicator for these balancing observations.
+ *
+ *   Therefore every imported balancing row is stored as:
+ *
+ *       record_status = 'unclassified'
+ *
+ *   Status MUST NOT be inferred from:
+ *     - core.model_run.as_of_utc
+ *     - calendar month
+ *     - workbook formatting
+ *     - whether a value appears historical or forecast-like
+ *
+ *   A future authoritative source may explicitly classify records
+ *   as actual, forecast or manual_override.
+ *
+ * Lineage rule:
+ *   Explicit workbook cells receive source-cell lineage.
+ *
+ *   September-December contain no source cells in column U.
+ *   Their redistribution_income_ron values therefore default to 0
+ *   during transformation and deliberately have no artificial
+ *   source-cell lineage.
+ *
+ * Run:
+ *   core.model_run.run_id = 1
+ */
 
 
 begin;
 
 
--- ============================================================
--- SAFETY GUARD
--- ============================================================
--- Do not silently overwrite an already transformed model run.
+/*
+ * ============================================================
+ * SAFETY GUARD
+ * ============================================================
+ *
+ * Do not silently overwrite an already transformed model run.
+ */
 
 do $$
 begin
+
     if exists (
         select 1
         from core.balancing_month
@@ -39,13 +70,140 @@ begin
         raise exception
             'core.balancing_month already contains data for run_id = 1. Transformation aborted.';
     end if;
+
+
+    if exists (
+        select 1
+        from core.balancing_month_lineage
+        where run_id = 1
+    ) then
+        raise exception
+            'core.balancing_month_lineage already contains data for run_id = 1. Transformation aborted.';
+    end if;
+
 end
 $$;
 
 
--- ============================================================
--- LOAD MONTHLY BALANCING FACTS
--- ============================================================
+/*
+ * ============================================================
+ * SOURCE-EVIDENCE VALIDATION
+ * ============================================================
+ *
+ * Verified workbook evidence:
+ *
+ *   O month label                    12
+ *   P deficit MWh                    12
+ *   Q deficit RON/MWh                12
+ *   R excess MWh                     12
+ *   S excess RON/MWh                 12
+ *   U redistribution income RON       8
+ *
+ * Total explicit source cells:        68
+ */
+
+do $$
+declare
+    v_o integer;
+    v_p integer;
+    v_q integer;
+    v_r integer;
+    v_s integer;
+    v_u integer;
+    v_total integer;
+begin
+
+    select
+        count(*) filter (
+            where regexp_replace(cell_address, '\d', '', 'g') = 'O'
+        ),
+        count(*) filter (
+            where regexp_replace(cell_address, '\d', '', 'g') = 'P'
+        ),
+        count(*) filter (
+            where regexp_replace(cell_address, '\d', '', 'g') = 'Q'
+        ),
+        count(*) filter (
+            where regexp_replace(cell_address, '\d', '', 'g') = 'R'
+        ),
+        count(*) filter (
+            where regexp_replace(cell_address, '\d', '', 'g') = 'S'
+        ),
+        count(*) filter (
+            where regexp_replace(cell_address, '\d', '', 'g') = 'U'
+        ),
+        count(*)
+    into
+        v_o,
+        v_p,
+        v_q,
+        v_r,
+        v_s,
+        v_u,
+        v_total
+    from raw.source_cell
+    where source_file_id = 1
+      and sheet_name = 'Asumptions'
+      and cell_address ~ '^(O|P|Q|R|S|U)([4-9]|1[0-5])$';
+
+
+    if v_o <> 12 then
+        raise exception
+            'Expected 12 month-label source cells in column O, found %.',
+            v_o;
+    end if;
+
+
+    if v_p <> 12 then
+        raise exception
+            'Expected 12 deficit-MWh source cells in column P, found %.',
+            v_p;
+    end if;
+
+
+    if v_q <> 12 then
+        raise exception
+            'Expected 12 deficit-price source cells in column Q, found %.',
+            v_q;
+    end if;
+
+
+    if v_r <> 12 then
+        raise exception
+            'Expected 12 excess-MWh source cells in column R, found %.',
+            v_r;
+    end if;
+
+
+    if v_s <> 12 then
+        raise exception
+            'Expected 12 excess-price source cells in column S, found %.',
+            v_s;
+    end if;
+
+
+    if v_u <> 8 then
+        raise exception
+            'Expected 8 redistribution-income source cells in column U, found %.',
+            v_u;
+    end if;
+
+
+    if v_total <> 68 then
+        raise exception
+            'Expected 68 balancing source cells in total, found %.',
+            v_total;
+    end if;
+
+end
+$$;
+
+
+/*
+ * ============================================================
+ * LOAD MONTHLY BALANCING FACTS
+ * ============================================================
+ */
 
 with source_cells as (
     select
@@ -137,22 +295,11 @@ prepared as (
         p.excess_ron_per_mwh,
         p.redistribution_income_ron,
 
-        case
-            when make_date(
-                mr.model_year,
-                p.row_no - 3,
-                1
-            )
-            <
-            date_trunc(
-                'month',
-                mr.as_of_utc
-                    at time zone 'Europe/Bucharest'
-            )::date
-            then 'actual'
-
-            else 'forecast'
-        end as record_status
+        /*
+         * No authoritative actual/forecast classification exists
+         * in the workbook source.
+         */
+        'unclassified' as record_status
 
     from pivoted p
 
@@ -183,9 +330,11 @@ select
     redistribution_income_ron,
     record_status,
 
-    -- Multiple workbook cells contribute to each monthly record.
-    -- Detailed provenance is stored in
-    -- core.balancing_month_lineage.
+    /*
+     * Multiple workbook cells contribute to each monthly record.
+     * Field-level provenance is therefore stored in
+     * core.balancing_month_lineage.
+     */
     null as source_cell_id
 
 from prepared
@@ -193,9 +342,11 @@ from prepared
 order by month_start;
 
 
--- ============================================================
--- LOAD FIELD-LEVEL SOURCE LINEAGE
--- ============================================================
+/*
+ * ============================================================
+ * LOAD FIELD-LEVEL SOURCE LINEAGE
+ * ============================================================
+ */
 
 with source_cells as (
     select
@@ -283,13 +434,41 @@ order by
     source_role;
 
 
--- ============================================================
--- VALIDATION
--- ============================================================
+/*
+ * ============================================================
+ * VALIDATION
+ * ============================================================
+ *
+ * Expected:
+ *
+ *   12 balancing months
+ *
+ *   68 source-lineage records:
+ *
+ *     month_label                    12
+ *     deficit_mwh                    12
+ *     deficit_ron_per_mwh            12
+ *     excess_mwh                     12
+ *     excess_ron_per_mwh             12
+ *     redistribution_income_ron       8
+ *                                    --
+ *                                    68
+ *
+ * September-December have no source cells in column U.
+ * Their redistribution_income_ron = 0 values are normalized
+ * defaults produced by this transformation and therefore do not
+ * receive fabricated source-cell lineage.
+ *
+ * Every balancing row must be unclassified because no
+ * authoritative actual/forecast source exists in the workbook.
+ */
 
 do $$
 declare
     balancing_rows integer;
+    lineage_rows integer;
+    redistribution_lineage_rows integer;
+    unsupported_status_rows integer;
 begin
 
     select count(*)
@@ -297,22 +476,72 @@ begin
     from core.balancing_month
     where run_id = 1;
 
+
     if balancing_rows <> 12 then
         raise exception
-            'Expected 12 balancing months for run_id = 1, found %',
+            'Expected 12 balancing months for run_id = 1, found %.',
             balancing_rows;
+    end if;
+
+
+    select count(*)
+    into lineage_rows
+    from core.balancing_month_lineage
+    where run_id = 1;
+
+
+    if lineage_rows <> 68 then
+        raise exception
+            'Expected 68 balancing lineage rows for run_id = 1, found %.',
+            lineage_rows;
+    end if;
+
+
+    select count(*)
+    into redistribution_lineage_rows
+    from core.balancing_month_lineage
+    where run_id = 1
+      and source_role = 'redistribution_income_ron';
+
+
+    if redistribution_lineage_rows <> 8 then
+        raise exception
+            'Expected 8 redistribution_income_ron lineage rows for run_id = 1, found %.',
+            redistribution_lineage_rows;
+    end if;
+
+
+    select count(*)
+    into unsupported_status_rows
+    from core.balancing_month
+    where run_id = 1
+      and record_status <> 'unclassified';
+
+
+    if unsupported_status_rows <> 0 then
+        raise exception
+            'Expected all balancing rows to have record_status = unclassified; found % rows with another status.',
+            unsupported_status_rows;
     end if;
 
 end
 $$;
 
 
+/*
+ * ============================================================
+ * COMMIT
+ * ============================================================
+ */
+
 commit;
 
 
--- ============================================================
--- RESULT PREVIEW
--- ============================================================
+/*
+ * ============================================================
+ * RESULT PREVIEW
+ * ============================================================
+ */
 
 select
     bm.month_start,
@@ -335,3 +564,12 @@ from core.balancing_month bm
 where bm.run_id = 1
 
 order by bm.month_start;
+
+
+select
+    source_role,
+    count(*) as lineage_rows
+from core.balancing_month_lineage
+where run_id = 1
+group by source_role
+order by source_role;
